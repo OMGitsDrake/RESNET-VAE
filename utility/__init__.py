@@ -8,7 +8,8 @@ from .losses import (
 )
 from .param import (
     normalize_minst,
-    rep_sample
+    rep_sample,
+    update_beta
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     'KL_loss',
     'normalize_minst',
     'rep_sample',
+    'update_beta'
 ]

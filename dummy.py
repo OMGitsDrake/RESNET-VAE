@@ -1,12 +1,18 @@
-import sys
-import torch
+from math import exp
 
-print("Python:", sys.executable)
-print("PyTorch:", torch.__version__)
-print("PyTorch location:", torch.__file__)
-print("Built with CUDA:", torch.version.cuda)
-print("CUDA available:", torch.cuda.is_available())
-print("GPU count:", torch.cuda.device_count())
+if __name__ == '__main__':
+    epochs = 20
+    full_weight_epoch = epochs - epochs // 3
+    steep = 3.0
 
-if torch.cuda.is_available():
-    print("GPU:", torch.cuda.get_device_name(0))
+    for epoch in range(1, epochs+1):
+
+        prog = min(
+            (epoch - 1) / (full_weight_epoch - 1),
+            1.0
+        )
+
+        # beta = (1 - exp(-steep * prog)) / (1 - exp(-steep))
+        beta = (exp(steep * prog) - 1) / (exp(steep) - 1)
+        
+        print(f'Weight used in epoch: {epoch} - {beta:.4f}')

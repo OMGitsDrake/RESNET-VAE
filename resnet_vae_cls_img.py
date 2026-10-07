@@ -1,7 +1,7 @@
 import torch.nn as nn
 import torchvision
 from torch.utils.data import DataLoader
-from torch.optim import SGD
+from torch.optim import SGD, Adam
 from torch import (
     cuda,
     inference_mode,
@@ -20,13 +20,15 @@ from utility import (
     MODELS_DIR,
     KL_loss,
     normalize_minst,
-    rep_sample
+    rep_sample,
+    update_beta
 )
 from definitions import (
     EncoderModule,
     DecoderModule,
 )
 from os import remove
+from math import exp
 
 # raw input
 #    ↓
@@ -76,53 +78,74 @@ class ConditionalDecoder(nn.Module):
         out = self.decoder(out)
 
         return out
-
+    
 
 def pretrain_vae(
         loader,
         device,
-        optim,
-        encoder: nn.Module,
-        decoder: nn.Module,
         epochs: int = 50,
-        beta: float = 1.0,
-):    
+) -> tuple[float, float, float]:
     log_every = epochs // 10
+    encoder = EncoderModule(latent_dim=16).to(device)
+    decoder = ConditionalDecoder(label_dim=8).to(device)
+    
     encoder.train()
     decoder.train()
-    
+
+    optim = Adam(
+        list(encoder.parameters())
+        + list(decoder.parameters()),
+        lr=1e-3
+    )
+
+    print(f'VAE PRETRAINING STARTED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
     for epoch in range(1, epochs+1):
         epoch_loss = 0.0
+        epoch_rec_loss = 0.0
+        epoch_KL_loss = 0.0
         epoch_samples = 0
+        beta_i = update_beta(epoch=epoch, full_weight_epoch=epochs-epochs//3)
 
         for imgs, labels in loader:
             imgs = imgs.to(device)
             labels = labels.to(device)
 
             optim.zero_grad()
-            
+
+            # RuntimeError: Input type (torch.cuda.FloatTensor) and weight type (torch.FloatTensor) should be the sam
             mu, log_var = encoder(imgs)
             z = rep_sample(mu, log_var)
-            latent_loss = KL_loss(mu, log_var)
 
             reconstructed = decoder(z, labels)
             rec_loss = nn.functional.binary_cross_entropy(reconstructed, imgs, reduction='sum') / imgs.size(0)
+            latent_loss = KL_loss(mu, log_var)
 
-            loss = rec_loss + beta * latent_loss
+            loss = rec_loss + beta_i * latent_loss
             loss.backward()
 
             optim.step()
 
             epoch_loss += loss.item() * imgs.size(0)
+            epoch_rec_loss += rec_loss.item() * imgs.size(0)
+            epoch_KL_loss += latent_loss.item() * imgs.size(0)
             epoch_samples += imgs.size(0)
 
         avg_loss = epoch_loss / epoch_samples
+        avg_rec_loss = epoch_rec_loss / epoch_samples
+        avg_KL_loss = epoch_KL_loss / epoch_samples
+        
         if epoch % log_every == 0 or epoch == 1:
             print(
                 f'epoch: {epoch}/{epochs}:\n'
-                f'\t AVG: \t\t\t{avg_loss}\n'
-                f'\t LAST: \t\t{loss}\n'
+                f'\t AVG: \t{avg_loss}\n'
+                f'\t AVG KL: \t{avg_KL_loss}\n'
+                f'\t AVG Rec: \t{avg_rec_loss}\n'
+                f'\t beta: \t{beta_i}\n'
+                f'\t LAST: \t{loss}\n'
             )
+
+    print(f'VAE PRETRAINING FINISHED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
+    return avg_loss, avg_KL_loss, avg_rec_loss
     
 
 def train(
@@ -245,7 +268,7 @@ def test(
 
     return avg_loss, accuracy
 
-def main():
+def main_full():
     device = dvc(
         'cuda' if cuda.is_available() else 'cpu'
     )
@@ -347,5 +370,35 @@ def main():
 
     print(f'AVG LOSS: {avg_loss}\nACCURACY: {accuracy}')
 
+def main_vae():
+    device = dvc(
+        'cuda' if cuda.is_available() else 'cpu'
+    )
+    print(f'using device: {device}')
+
+    train_mnist = torchvision.datasets.MNIST(
+        './data',
+        train=True,
+        download=True,
+        transform=torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            # torchvision.transforms.Normalize((0.1307,), (0.3081,))
+        ])
+    )
+    train_loader = DataLoader(
+        dataset=train_mnist,
+        batch_size=64,
+        shuffle=True
+    )
+
+    epochs = 25
+    avg, KL, rec = pretrain_vae(train_loader, device, epochs=epochs)
+
+    print(
+        f'AVG: {avg}'
+        f'KL: {KL}'
+        f'Rec: {rec}'
+    )
+
 if __name__ == '__main__':
-    main()
+    main_vae()
