@@ -61,7 +61,13 @@ class EncoderModule(nn.Module):
         super().__init__()
 
         self.features = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, stride=2, padding=1),
+            # nn.Conv2d(1, 16, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(),
+
+            ResidualBlock(16, 16),
+            
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
             nn.LeakyReLU(),
 
             ResidualBlock(32, 32),
@@ -73,6 +79,7 @@ class EncoderModule(nn.Module):
 
             nn.Flatten(),
             nn.Linear(64 * 7 * 7, 128),
+            # nn.Linear(64 * 4 * 4, 128),
             nn.LeakyReLU()
         )
 

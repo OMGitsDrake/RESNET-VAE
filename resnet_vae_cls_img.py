@@ -16,6 +16,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from utility import (
     save_training_preview,
+    save_vae_reconstruction_preview,
     total_variation_loss,
     MODELS_DIR,
     KL_loss,
@@ -28,7 +29,6 @@ from definitions import (
     DecoderModule,
 )
 from os import remove
-from math import exp
 
 # raw input
 #    ↓
@@ -98,7 +98,17 @@ def pretrain_vae(
         lr=1e-3
     )
 
-    print(f'VAE PRETRAINING STARTED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
+    fixed_images, fixed_labels = next(iter(loader))
+    
+    fixed_images = fixed_images[:6].to(device)
+    fixed_labels = fixed_labels[:6].to(device)
+
+    prev_dir = Path(__file__).resolve().parent / 'logs' / 'vae_rec_preview'
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    for file in prev_dir.iterdir():
+        remove(file)
+
+    print(f'VAE PRETRAINING STARTED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
     for epoch in range(1, epochs+1):
         epoch_loss = 0.0
         epoch_rec_loss = 0.0
@@ -112,7 +122,6 @@ def pretrain_vae(
 
             optim.zero_grad()
 
-            # RuntimeError: Input type (torch.cuda.FloatTensor) and weight type (torch.FloatTensor) should be the sam
             mu, log_var = encoder(imgs)
             z = rep_sample(mu, log_var)
 
@@ -137,14 +146,34 @@ def pretrain_vae(
         if epoch % log_every == 0 or epoch == 1:
             print(
                 f'epoch: {epoch}/{epochs}:\n'
-                f'\t AVG: \t{avg_loss}\n'
-                f'\t AVG KL: \t{avg_KL_loss}\n'
-                f'\t AVG Rec: \t{avg_rec_loss}\n'
-                f'\t beta: \t{beta_i}\n'
-                f'\t LAST: \t{loss}\n'
+                f'\t AVG: \t\t{avg_loss:.4f}\n'
+                f'\t AVG KL: \t{avg_KL_loss:.4f}\n'
+                f'\t AVG Rec: \t{avg_rec_loss:.4f}\n'
+                f'\t beta: \t\t{beta_i:.4f}\n'
+                f'\t LAST: \t\t{loss:.4f}\n'
             )
 
-    print(f'VAE PRETRAINING FINISHED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
+            save_vae_reconstruction_preview(
+                encoder=encoder,
+                decoder=decoder,
+                input_images=fixed_images,
+                input_labels=fixed_labels,
+                epoch=epoch,
+                average_loss=avg_loss,
+                output_directory=prev_dir
+            )
+
+    print(f'VAE PRETRAINING FINISHED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
+
+    save(
+        encoder.state_dict(),
+        f'{MODELS_DIR}/vae_encoder.pt'
+    )
+    save(
+        decoder.state_dict(),
+        f'{MODELS_DIR}/vae_decoder.pt'
+    )
+
     return avg_loss, avg_KL_loss, avg_rec_loss
     
 
@@ -171,7 +200,7 @@ def train(
     for file in prev_dir.iterdir():
         remove(file)
 
-    print(f'TRAINING STARTED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
+    print(f'TRAINING STARTED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
     avg_loss = float('nan')
     for epoch in range(1, epochs + 1):
         epoch_loss = 0.0
@@ -220,7 +249,7 @@ def train(
                 output_directory=prev_dir
             )
 
-    print(f'TRAINING FINISHED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
+    print(f'TRAINING FINISHED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
     return avg_loss
 
 
@@ -239,7 +268,7 @@ def test(
     total_samples = 0
     correct = 0
 
-    print(f'TEST STARTED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
+    print(f'TEST STARTED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
     with inference_mode():
         for i, (imgs, labels) in enumerate(loader, start=1):
             imgs = normalize_minst(imgs)
@@ -262,11 +291,12 @@ def test(
             if i % 10 == 0 or i == 1:
                 print(f'batch - {i} | loss: {loss}')
 
-    print(f'TEST FINISHED AT {datetime.now(UTC).strftime("%H:%M:%S")}')
+    print(f'TEST FINISHED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
     avg_loss = total_loss / total_samples
     accuracy = correct / total_samples
 
     return avg_loss, accuracy
+
 
 def main_full():
     device = dvc(
@@ -337,9 +367,9 @@ def main_full():
         )
 
         log_file = Path(__file__).stem
-        with open(f'Lecture 3/logs/train_{log_file}.log', 'a', encoding='utf-8') as logfile:
+        with open(f'logs/train/train_{log_file}.log', 'a', encoding='utf-8') as logfile:
             logfile.write(
-                f'[{datetime.now(UTC).strftime("%d/%m/%Y %H:%M:%S")}] '
+                f'[{datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S")}] '
                 f'[{model.__class__.__name__}] - Last epoch loss: {last_epoch_loss}\n'
             )
 
@@ -360,9 +390,9 @@ def main_full():
     avg_loss, accuracy = test(model, classifier, test_loader, loss_fn, device)
 
     log_file = Path(__file__).stem
-    with open(f'Lecture 3/logs/test_{log_file}.log', 'a', encoding='utf-8') as logfile:
+    with open(f'logs/test/test_{log_file}.log', 'a', encoding='utf-8') as logfile:
         logfile.write(
-            f'[{datetime.now(UTC).strftime("%d/%m/%Y %H:%M:%S")}] '
+            f'[{datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S")}] '
             f'[{model.__class__.__name__}]\n'
             f'\tAVG test loss: {avg_loss}\n'
             f'\tTest Accuracy: {accuracy}\n'
@@ -391,14 +421,24 @@ def main_vae():
         shuffle=True
     )
 
-    epochs = 25
+    epochs = 100
     avg, KL, rec = pretrain_vae(train_loader, device, epochs=epochs)
 
-    print(
-        f'AVG: {avg}'
-        f'KL: {KL}'
-        f'Rec: {rec}'
-    )
+    log_file = Path(__file__).stem
+    with open(f'logs/train/train_{log_file}.log', 'a', encoding='utf-8') as logfile:
+        logfile.write(
+            f'[{datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S")}] '
+            f'Average loss: \t\t\t{avg:.4f}\n'
+            f'KL loss: \t\t\t{KL:.4f}\n'
+            f'Reconstruction loss: \t{rec:.4f}\n'
+        )
+    # AVG: 87.4560
+    # KL: 20.4434
+    # Rec: 67.0126
+
+    # AVG: 87.2345
+    # KL: 20.2062
+    # Rec: 67.0283 - 0.086
 
 if __name__ == '__main__':
     main_vae()
