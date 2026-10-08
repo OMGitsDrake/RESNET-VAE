@@ -466,7 +466,7 @@ def main_full():
             reconstructed_imgs = decoder(z, successor_labels)
 
             if i % 10 == 0 or i == 1:
-                print(f'batch - {i} | predicted label: {predicted_labels[0]} (was {labels[0]})')
+                print(f'batch - {i:03d} | predicted label: {predicted_labels[0]} (was {labels[0]})')
                 
                 save_vae_reconstruction_inference_preview(
                     input_images=imgs[:5],
