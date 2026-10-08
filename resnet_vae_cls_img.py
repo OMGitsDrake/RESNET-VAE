@@ -9,14 +9,16 @@ from torch import (
     load,
     save,
     cat,
+    randn
 )
 from mlp_classifier import MLP
 from resnet_classifier_img import ResNETSEQ
-from datetime import datetime, UTC
+from datetime import datetime
 from pathlib import Path
 from utility import (
     save_training_preview,
     save_vae_reconstruction_preview,
+    save_vae_reconstruction_inference_preview,
     total_variation_loss,
     MODELS_DIR,
     KL_loss,
@@ -105,6 +107,7 @@ def pretrain_vae(
 
     prev_dir = Path(__file__).resolve().parent / 'logs' / 'vae_rec_preview'
     prev_dir.mkdir(parents=True, exist_ok=True)
+    prev_dir.mkdir(parents=True, exist_ok=True)
     for file in prev_dir.iterdir():
         remove(file)
 
@@ -175,7 +178,111 @@ def pretrain_vae(
     )
 
     return avg_loss, avg_KL_loss, avg_rec_loss
+
+
+def vae_inference(
+    loader,
+    device,
+    generation: int = 0
+) -> tuple[float, float, float]:
+    encoder = EncoderModule(latent_dim=16)
+    decoder = ConditionalDecoder(label_dim=8)
+
+    state_enc = load(
+        f'{MODELS_DIR}/vae_encoder.pt',
+        map_location=device,
+        weights_only=True
+    )
+    state_dec = load(
+        f'{MODELS_DIR}/vae_decoder.pt',
+        map_location=device,
+        weights_only=True
+    )
+    encoder.load_state_dict(state_enc)
+    decoder.load_state_dict(state_dec)
     
+    encoder.to(device).eval()
+    decoder.to(device).eval()
+
+    prev_dir = Path(__file__).resolve().parent / 'logs' / 'vae_rec_inference'
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    for file in prev_dir.iterdir():
+        remove(file)
+
+    total_loss = 0.0
+    total_rec_loss = 0.0
+    total_KL_loss = 0.0
+    total_samples = 0
+
+    loss = float('nan')
+
+    print(f'VAE INFERENCE STARTED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
+    with inference_mode():
+        for i, (imgs, labels) in enumerate(loader, start=1):
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+    
+            mu, log_var = encoder(imgs)
+
+            match generation:
+                case 0:
+                    # sampled z
+                    z = rep_sample(mu, log_var)
+                    
+                    reconstructed = decoder(z, labels)
+                    rec_loss = nn.functional.binary_cross_entropy(
+                        reconstructed,
+                        imgs,
+                        reduction='sum'
+                    ) / imgs.size(0)
+
+                    latent_loss = KL_loss(mu, log_var)
+
+                    loss = rec_loss + latent_loss
+
+                    batch_size = reconstructed.size(0)
+                    total_rec_loss += rec_loss.item() * batch_size
+                    total_KL_loss += latent_loss.item() * batch_size
+                    total_loss += loss.item() * batch_size
+                    total_samples += batch_size
+                case 1:
+                    # generate from random z and good label
+                    z = randn(imgs.size(0), 16, device=device)
+                    
+                    reconstructed = decoder(z, labels)
+                case 2:
+                    # change label and maintain the embeddings
+                    z = rep_sample(mu, log_var)
+                    shift_labels = (labels + 1) % 10
+
+                    reconstructed = decoder(z, shift_labels)
+                case _:
+                    return float('nan'), float('nan'), float('nan')
+
+            if i % 10 == 0 or i == 1:
+                print(f'batch - {i} | loss: {loss}')
+
+                save_vae_reconstruction_inference_preview(
+                    input_images=imgs,
+                    rec_images=reconstructed,
+                    labels=labels,
+                    target_labels=labels,
+                    batch=i,
+                    loss=loss,
+                    output_directory=prev_dir
+                )
+                
+    print(f'VAE INFERENCE FINISHED AT {datetime.now().astimezone().strftime("%H:%M:%S")}')
+    if generation == 0:
+        avg_loss = total_loss / total_samples
+        avg_rec_loss = total_rec_loss / total_samples
+        avg_KL_loss = total_KL_loss / total_samples
+
+        return avg_loss, avg_KL_loss, avg_rec_loss
+    else:
+        return float('nan'), float('nan'), float('nan')
+
 
 def train(
     model: nn.Module,
@@ -197,6 +304,7 @@ def train(
     fixed_labels = fixed_labels[:6].to(device)
 
     prev_dir = Path(__file__).resolve().parent / 'logs' / 'ex2_previews'
+    prev_dir.mkdir(parents=True, exist_ok=True)
     for file in prev_dir.iterdir():
         remove(file)
 
@@ -330,75 +438,45 @@ def main_full():
     classifier.to(device)
     classifier.eval()
 
-    model = ResNETSEQ().to(device)
-
-    loss_fn = nn.CrossEntropyLoss()
-
-    saved_dict = Path(f'{MODELS_DIR}/mnist_resnet.pt').resolve()
-    if not saved_dict.exists():
-        train_mnist = torchvision.datasets.MNIST(
-            './data',
-            train=True,
-            download=True,
-            transform=torchvision.transforms.Compose([
-                torchvision.transforms.ToTensor(),
-                # torchvision.transforms.Normalize((0.1307,), (0.3081,))
-            ])
-        )
-        train_loader = DataLoader(
-            dataset=train_mnist,
-            batch_size=64,
-            shuffle=True
-        )
-
-        epochs = 25
-        lr = 5e-3
-        optim = SGD(model.parameters(), lr=lr)
-
-        last_epoch_loss = train(
-            model=model,
-            classifier=classifier,
-            loader=train_loader,
-            optim=optim,
-            loss_fn=loss_fn,
-            epochs=epochs,
-            device=device,
-            log_every=5
-        )
-
-        log_file = Path(__file__).stem
-        with open(f'logs/train/train_{log_file}.log', 'a', encoding='utf-8') as logfile:
-            logfile.write(
-                f'[{datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S")}] '
-                f'[{model.__class__.__name__}] - Last epoch loss: {last_epoch_loss}\n'
-            )
-
-        save(
-            model.state_dict(),
-            f'{MODELS_DIR}/mnist_resnet.pt'
-        )
-
-    state = load(
-        f'{MODELS_DIR}/mnist_resnet.pt',
+    decoder = ConditionalDecoder(label_dim=8)
+    state_dec = load(
+        f'{MODELS_DIR}/vae_decoder.pt',
         map_location=device,
         weights_only=True
     )
+    decoder.load_state_dict(state_dec)
+    decoder.to(device)
+    decoder.eval()
 
-    model.load_state_dict(state)
-    model.to(device=device)
+    prev_dir = Path(__file__).resolve().parent / 'logs' / 'predicted_successors'
+    prev_dir.mkdir(parents=True, exist_ok=True)
+    for file in prev_dir.iterdir():
+        remove(file)
 
-    avg_loss, accuracy = test(model, classifier, test_loader, loss_fn, device)
+    with inference_mode():
+        for i, (imgs, labels) in enumerate(test_loader, start=1):
+            imgs = imgs.to(device)
+            labels = labels.to(device)
 
-    log_file = Path(__file__).stem
-    with open(f'logs/test/test_{log_file}.log', 'a', encoding='utf-8') as logfile:
-        logfile.write(
-            f'[{datetime.now().astimezone().strftime("%d/%m/%Y %H:%M:%S")}] '
-            f'[{model.__class__.__name__}]\n'
-            f'\tAVG test loss: {avg_loss}\n'
-            f'\tTest Accuracy: {accuracy}\n'
-        )
+            logits = classifier((imgs - 0.1307) / 0.3081)
+            predicted_labels = logits.argmax(dim=1)
+            successor_labels = (predicted_labels + 1) % 10
 
-    print(f'AVG LOSS: {avg_loss}\nACCURACY: {accuracy}')
+            z = randn(imgs.size(0), 16, device=device)
+            reconstructed_imgs = decoder(z, successor_labels)
+
+            if i % 10 == 0 or i == 1:
+                print(f'batch - {i} | predicted label: {predicted_labels[0]} (was {labels[0]})')
+                
+                save_vae_reconstruction_inference_preview(
+                    input_images=imgs[:5],
+                    rec_images=reconstructed_imgs[:5],
+                    labels=labels[:5],
+                    target_labels=successor_labels[:5],
+                    batch=i,
+                    loss=float('nan'),
+                    output_directory=prev_dir
+                )
 
 def main_vae():
     device = dvc(
@@ -432,13 +510,29 @@ def main_vae():
             f'KL loss: \t\t\t{KL:.4f}\n'
             f'Reconstruction loss: \t{rec:.4f}\n'
         )
-    # AVG: 87.4560
-    # KL: 20.4434
-    # Rec: 67.0126
-
-    # AVG: 87.2345
-    # KL: 20.2062
-    # Rec: 67.0283 - 0.086
 
 if __name__ == '__main__':
-    main_vae()
+    # main_vae()
+    # test_mnist = torchvision.datasets.MNIST(
+    #     './data',
+    #     train=False,
+    #     download=True,
+    #     transform=torchvision.transforms.Compose([
+    #         torchvision.transforms.ToTensor(),
+    #         # Normalize when needed!
+    #         # torchvision.transforms.Normalize((0.1307,), (0.3081,))
+    #     ])
+    # )
+    # test_loader = DataLoader(
+    #     dataset=test_mnist,
+    #     batch_size=64,
+    #     shuffle=False
+    # )
+
+    # device = dvc(
+    #     'cuda' if cuda.is_available() else 'cpu'
+    # )
+    # print(f'using device: {device}')
+
+    # vae_inference(test_loader, device, generation=2)
+    main_full()

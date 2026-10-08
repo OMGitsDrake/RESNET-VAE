@@ -1,6 +1,6 @@
 from matplotlib import pyplot as plt
 from torch import inference_mode
-from utility import rep_sample
+from .param import rep_sample
 
 MODELS_DIR = 'trained_models'
 
@@ -160,3 +160,58 @@ def save_vae_reconstruction_preview(
     finally:
         encoder.train(encoder_was_training)
         decoder.train(decoder_was_training)
+
+
+def save_vae_reconstruction_inference_preview(
+    input_images,
+    rec_images,
+    labels,
+    target_labels,
+    batch,
+    loss,
+    output_directory,
+):
+    number_of_images = rec_images.size(0)
+    figure, axes = plt.subplots(
+        2,
+        number_of_images,
+        figsize=(2 * number_of_images, 4),
+        squeeze=False,
+    )
+
+    try:
+        for index in range(number_of_images):
+            label = labels[index].item()
+            target = target_labels[index].item()
+
+            axes[0, index].imshow(
+                input_images[index, 0].cpu(),
+                cmap="gray",
+                vmin=0,
+                vmax=1,
+            )
+            axes[0, index].set_title(f"Input: {label}")
+            axes[0, index].axis("off")
+
+            axes[1, index].imshow(
+                rec_images[index, 0].cpu(),
+                cmap="gray",
+                vmin=0,
+                vmax=1,
+            )
+            axes[1, index].set_title(f"Reconstruction: {target}")
+            axes[1, index].axis("off")
+
+        figure.suptitle(
+            f"Batch {batch} — VAE loss: {loss:.6f}"
+        )
+        figure.tight_layout()
+
+        output_directory.mkdir(parents=True, exist_ok=True)
+        figure.savefig(
+            output_directory / f"batch_{batch:04d}.png",
+            dpi=150,
+            bbox_inches="tight",
+        )
+    finally:
+        plt.close(figure)
